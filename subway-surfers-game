@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Subway Surfers-Style Runner with High Graphics</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #score { position: absolute; top: 10px; left: 10px; font-family: Arial; font-size: 20px; color: white; background: rgba(0,0,0,0.5); padding: 5px; }
+        #controls { position: absolute; top: 40px; left: 10px; font-family: Arial; font-size: 14px; color: white; background: rgba(0,0,0,0.5); padding: 5px; }
+        #gameOver { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; display: none; }
+        #playAgainBtn { font-size: 20px; padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 5px; }
+        #playAgainBtn:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0 | Multiplier: 1x</div>
+    <div id="controls">
+        <strong>Controls:</strong><br>
+        - LEFT/RIGHT ARROWS (or A/D): Switch lanes<br>
+        - SPACEBAR: Jump over barriers<br>
+        - DOWN ARROW (or S): Slide under trains<br>
+        - R: Restart after game over
+    </div>
+    <div id="gameOver">
+        <h2>Game Over!</h2>
+        <p id="finalScore">Final Score: 0</p>
+        <button id="playAgainBtn">Play Again</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/TextureLoader.js"></script>
+    <script>
+        // Scene setup with high graphics
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 100); // Add fog for depth
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true }); // Enable anti-aliasing
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true; // Enable shadows
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Soft shadows
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting with shadows
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(0, 10, 5);
+        directionalLight.castShadow = true; // Enable shadows
+        directionalLight.shadow.mapSize.width = 2048; // High resolution shadows
+        directionalLight.shadow.mapSize.height = 2048;
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 50;
+        scene.add(directionalLight);
+        const pointLight = new THREE.PointLight(0xffaa00, 0.5, 100);
+        pointLight.position.set(0, 5, 0);
+        scene.add(pointLight);
+
+        // Texture loader
+        const textureLoader = new THREE.TextureLoader();
+
+        // Track with texture (made scrollable)
+        const trackGeometry = new THREE.PlaneGeometry(20, 200);
+        let trackMaterial;
+        textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg', (texture) => {
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(10, 10);
+            trackMaterial = new THREE.MeshLambertMaterial({ map: texture });
+            const track = new THREE.Mesh(trackGeometry, trackMaterial);
+            track.rotation.x = -Math.PI / 2;
+            track.position.z = -100;
+            track.receiveShadow = true;
+            scene.add(track);
+            // Store reference for scrolling
+            scene.userData.track = track;
+        });
+
+        // Lane lines with texture (made scrollable)
+        const laneLines = [];
+        for (let i = 0; i < 3; i++) {
+            const lineGeometry = new THREE.PlaneGeometry(0.1, 200);
+            textureLoader.load('https://threejs.org/examples/textures/uv_grid_opengl.jpg', (texture) => {
+                texture.wrapT = THREE.RepeatWrapping;
+                texture.repeat.set(1, 10);
+                const lineMaterial = new THREE.MeshBasicMaterial({ map: texture });
+                const line = new THREE.Mesh(lineGeometry, lineMaterial);
+                line.rotation.x = -Math.PI / 2;
+                line.position.set(-4 + i * 4, 0.01, -100);
+                scene.add(line);
+                laneLines.push(line);
+            });
+        }
+
+        // Loaders
+        const loader = new THREE.GLTFLoader();
+
+        // Boy (Fallback to cube, as real model URLs are placeholders)
+        let boy;
+        // Using fallback since placeholder URL won't work
+        const boyGeometry = new THREE.BoxGeometry(1, 1, 1);
+        const boyMaterial = new THREE.MeshLambertMaterial({ color: 0x0000ff });
+        boy = new THREE.Mesh(boyGeometry, boyMaterial);
+        boy.position.set(0, 0.5, 0);
+        boy.castShadow = true;
+        scene.add(boy);
+
+        // Game variables
+        let boyLane = 0;
+        let boyY = 0.5;
+        let boyDY = 0;
+        const gravity = -0.02;
+        const jumpPower = 0.5;
+        let onGround = true;
+        let sliding = false;
+        let slideTimer = 0;
+        let coins = [];
+        let obstacles = [];
+        let score = 0;
+        let multiplier = 1;
+        let combo = 0;
+        let gameSpeed = 0.1;
+        let gameRunning = true;
+        let trackOffset = 0;
+        const clock = new THREE.Clock();
+
+        // Coin geometry/material with texture
+        const coinGeometry = new THREE.SphereGeometry(0.3);
+        let coinMaterial = new THREE.MeshLambertMaterial({ color: 0xffd700 }); // Fallback
+        textureLoader.load('https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg', (texture) => {
+            coinMaterial = new THREE.MeshLambertMaterial({ map: texture });
+        });
+
+        // Barrier geometry/material with texture
+        const barrierGeometry = new THREE.BoxGeometry(1, 1.5, 1);
+        let barrierMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 }); // Fallback
+        textureLoader.load('https://threejs.org/examples/textures/brick_diffuse.jpg', (texture) => {
+            barrierMaterial = new THREE.MeshLambertMaterial({ map: texture });
+        });
+
+        // Train fallback (since sample model URL may not exist)
+        function createTrain() {
+            const trainGeometry = new THREE.BoxGeometry(1.5, 0.5, 1);
+            const trainMaterial = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            const train = new THREE.Mesh(trainGeometry, trainMaterial);
+            train.castShadow = true;
+            return train;
+        }
+
+        // Restart function
+        function restartGame() {
+            boyLane = 0; boyY = 0.5; boyDY = 0; onGround = true; sliding = false;
+            coins.forEach(coin => scene.remove(coin)); coins = [];
+            obstacles.forEach(obstacle => scene.remove(obstacle)); obstacles = [];
+            score = 0; multiplier = 1; combo = 0; gameSpeed = 0.1; gameRunning = true;
+            trackOffset = 0;
+            if (scene.userData.track) scene.userData.track.position.z = -100;
+            laneLines.forEach(line => line.position.z = -100);
+            document.getElementById('score').textContent = 'Score: 0 | Multiplier: 1x';
+            document.getElementById('gameOver').style.display = 'none';
+        }
+
+        // Update function
+        function update() {
+            if (!gameRunning || !boy) return;
+
+            const delta = clock.getDelta();
+
+            // Boy physics
+            if (sliding) {
+                slideTimer--;
+                if (slideTimer <= 0) sliding = false;
+                boy.scale.y = 0.5;
+            } else {
+                boy.scale.y = 1;
+                boyY += boyDY;
+                boyDY += gravity;
+                if (boyY <= 0.5) {
+                    boyY = 0.5;
+                    onGround = true;
+                    boyDY = 0;
+                }
+            }
+            boy.position.y = boyY;
+            boy.position.x = boyLane * 4;
+
+            // Scroll track and lines
+            trackOffset += gameSpeed;
+            if (scene.userData.track) {
+                scene.userData.track.position.z = -100 + trackOffset % 200;
+            }
+            laneLines.forEach(line => {
+                line.position.z = -100 + trackOffset % 200;
+            });
+
+            // Move coins
+            coins.forEach(coin => {
+                coin.position.z += gameSpeed;
+                if (Math.abs(coin.position.x - boy.position.x) < 1 && Math.abs(coin.position.z - boy.position.z) < 1 && Math.abs(coin.position.y - boy.position.y) < 1) {
+                    combo++;
+                    if (combo % 5 === 0) multiplier = Math.min(multiplier + 1, 5);
+                    score += 10 * multiplier;
+                    document.getElementById('score').textContent = `Score: ${score} | Multiplier: ${multiplier}x`;
+                    scene.remove(coin);
+                }
+            });
+            coins = coins.filter(coin => coin.position.z < 20); // Adjusted to remove after passing player
+
+            // Move obstacles
+            obstacles.forEach(obstacle => {
+                obstacle.position.z += gameSpeed;
+                if (Math.abs(obstacle.position.x - boy.position.x) < 1.5 && Math.abs(obstacle.position.z - boy.position.z) < 1.5) {
+                    if ((obstacle.userData.type === 'barrier' && !sliding && boyY <= 1) || (obstacle.userData.type === 'train' && !sliding)) {
+                        gameRunning = false;
+                        document.getElementById('finalScore').textContent = `Final Score: ${score}`;
+                        document.getElementById('gameOver').style.display = 'block';
+                    }
+                }
+            });
+            obstacles = obstacles.filter(obstacle => obstacle.position.z < 20); // Adjusted to remove after passing player
+
+            // Spawn coins farther away
+            if (Math.random() < 0.03) {
+                const coin = new THREE.Mesh(coinGeometry, coinMaterial);
+                coin.position.set((-1 + Math.floor(Math.random() * 3)) * 4, 1, -50); // Spawn at -50 for visibility from far
+                coin.castShadow = true;
+                scene.add(coin);
+                coins.push(coin);
+            }
+
+            // Spawn obstacles farther away
+            if (Math.random() < 0.015) {
+                const type = Math.random() < 0.5 ? 'barrier' : 'train';
+                if (type === 'barrier') {
+                    const obstacle = new THREE.Mesh(barrierGeometry, barrierMaterial);
+                    obstacle.position.set((-1 + Math.floor(Math.random() * 3)) * 4, 0.75, -50); // Spawn at -50 for visibility from far
+                    obstacle.castShadow = true;
+                    obstacle.userData.type = type;
+                    scene.add(obstacle);
+                    obstacles.push(obstacle);
+                } else {
+                    const train = createTrain();
+                    train.position.set((-1 + Math.floor(Math.random() * 3)) * 4, 0.25, -50); // Spawn at -50 for visibility from far
+                    train.userData.type = type;
+                    scene.add(train);
+                    obstacles.push(train);
+                }
+            }
+
+            // Camera follow
+            camera.position.set(boy.position.x, boy.position.y + 3, boy.position.z + 5);
+            camera.lookAt(boy.position);
+
+            // Increase speed
+            gameSpeed += 0.0005;
+        }
+
+        // Render loop
+        function animate() {
+            requestAnimationFrame(animate);
+            update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Controls
+        document.addEventListener('keydown', (e) => {
+            if (!gameRunning && e.key === 'r') {
+                restartGame();
+                return;
+            }
+            if (e.key === 'ArrowLeft' || e.key === 'a') boyLane = Math.max(-1, boyLane - 1);
+            if (e.key === 'ArrowRight' || e.key === 'd') boyLane = Math.min(1, boyLane + 1);
+            if (e.key === ' ' && onGround && !sliding) {
+                boyDY = jumpPower;
+                onGround = false;
+                e.preventDefault(); // Prevent page scroll
+            }
+            if (e.key === 'ArrowDown' || e.key === 's') {
+                sliding = true;
+                slideTimer = 30;
+            }
+        });
+
+        // Play Again Button
+        document.getElementById('playAgainBtn').addEventListener('click', restartGame);
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
